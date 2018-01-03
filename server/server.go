@@ -1,14 +1,19 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 
-	"github.com/arthurdenner/shortener/handlers"
-	"github.com/arthurdenner/shortener/url"
-	"github.com/arthurdenner/shortener/utils"
+	"goji.io"
+	"goji.io/pat"
+	"gopkg.in/mgo.v2"
+	"gopkg.in/mgo.v2/bson"
+
+	"./types"
+	"./utils"
 )
 
 var (
@@ -27,29 +32,78 @@ func init() {
 }
 
 func main() {
-	url.ConfigRepository(url.NewMemoryRepository())
+	session, err := mgo.Dial("localhost")
+	defer session.Close()
 
-	stats := make(chan string)
-	defer close(stats)
-	go registerStatistics(stats)
+	if err != nil {
+		panic(err)
+	}
 
-	hand := &handlers.Handlers{BaseURL: baseURL, IsLogsOn: isLogsOn}
+	session.SetMode(mgo.Monotonic, true)
+	utils.EnsureIndex(session)
 
-	http.HandleFunc("/api/short", hand.Shortener)
-	http.HandleFunc("/api/short/", hand.Shortener)
-	http.HandleFunc("/api/stats/", hand.Viewer)
-	http.Handle("/r/", &handlers.Redirect{Stats: stats})
-
-	utils.Logger(isLogsOn, "Listening in the port %d...", *port)
-	log.Fatal(http.ListenAndServe(
-		fmt.Sprintf(":%d", *port), nil,
-	))
+	mux := goji.NewMux()
+	mux.HandleFunc(pat.Get("/urls"), allUrls(session))
+	mux.HandleFunc(pat.Post("/urls"), saveURL(session))
+	log.Fatal(http.ListenAndServe("localhost:8080", mux))
 }
 
-func registerStatistics(ids <-chan string) {
-	for id := range ids {
-		url.RegisterClick(id)
+func allUrls(s *mgo.Session) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		session := s.Copy()
+		defer session.Close()
 
-		utils.Logger(isLogsOn, "Click registered to %s.", id)
+		c := session.DB("link-shortener").C("urls")
+
+		var urls []types.URL
+
+		err := c.Find(bson.M{}).All(&urls)
+
+		if err != nil {
+			utils.ErrorWithJSON(w, "Database error", http.StatusInternalServerError)
+			log.Println("Failed get all urls: ", err)
+
+			return
+		}
+
+		respBody, err := json.MarshalIndent(urls, "", "  ")
+
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		utils.ReplyWithJSON(w, respBody, http.StatusOK)
+	}
+}
+
+func saveURL(s *mgo.Session) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		session := s.Copy()
+		defer session.Close()
+
+		var url types.URL
+
+		decoder := json.NewDecoder(r.Body)
+		err := decoder.Decode(&url)
+
+		if err != nil {
+			utils.ErrorWithJSON(w, "You didn't pass any data!", http.StatusBadRequest)
+
+			return
+		}
+
+		c := session.DB("link-shortener").C("urls")
+
+		err = utils.TryUntilInsert(c, url)
+
+		if err != nil {
+			utils.ErrorWithJSON(w, err.Error(), http.StatusInternalServerError)
+
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Location", r.URL.Path+"/"+url.ShortURL)
+		w.WriteHeader(http.StatusCreated)
 	}
 }

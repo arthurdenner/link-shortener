@@ -4,24 +4,34 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/arthurdenner/shortener/types"
+	"../types"
 )
 
 // ReplyWith writes down the headers to the response
-func ReplyWith(w http.ResponseWriter, status int, headers types.Headers) {
+func ReplyWith(w http.ResponseWriter, code int, headers types.Headers) {
 	for key, value := range headers {
 		w.Header().Set(key, value)
 	}
 
-	w.WriteHeader(status)
+	w.WriteHeader(code)
 }
 
 // ReplyWithJSON writes down the headers to the response
 // with the Content-Type to application/json
-func ReplyWithJSON(w http.ResponseWriter, reply string) {
-	ReplyWith(w, http.StatusOK, types.Headers{
+func ReplyWithJSON(w http.ResponseWriter, json []byte, code int) {
+	ReplyWith(w, code, types.Headers{
 		"Content-Type": "application/json",
 	})
 
-	fmt.Fprintf(w, reply)
+	w.Write(json)
+}
+
+// ErrorWithJSON writes down the headers to the response
+// with the Content-Type to application/json
+func ErrorWithJSON(w http.ResponseWriter, message string, code int) {
+	ReplyWith(w, code, types.Headers{
+		"Content-Type": "application/json",
+	})
+
+	fmt.Fprintf(w, "{ \"message\": %q} ", message)
 }
